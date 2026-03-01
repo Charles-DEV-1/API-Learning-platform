@@ -15,5 +15,5 @@ class Course(db.Model):
     updated_at = db.Column(db.DateTime, onupdate=db.func.now())
     published = db.Column(db.Boolean, default=False)
 
-    lessons = db.relationship("Lesson", backref="course", lazy=True)
+    modules = db.relationship("Module", backref="course", lazy=True)
     enrollments = db.relationship("Enrollment", backref="course", lazy=True)
