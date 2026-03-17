@@ -4,6 +4,7 @@ from app.database import db
 from app.models.users import User
 from app import mail
 from app.models.course import Course
+from app.models.module import Module
 from flask_mail import Message
 
 course_bp = Blueprint("course", __name__)
@@ -326,3 +327,74 @@ def delete_course(course_id):
     """
     mail.send(msg)    
     
+@course_bp.route("/courses/<int:course_id>/modules", methods=["POST"])
+@jwt_required()
+def create_modules(course_id):
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+    if user.role != "instructor":
+        return jsonify({"msg": "Only instructors can create modules"}), 403
+    if course.instructor_id != user.id:
+        return jsonify({"msg": "You can only create modules for your own courses"}), 403
+    data = request.get_json()
+    if not data:
+        return jsonify({"msg": "No input data provided"}), 400
+    title = data.get("title")
+    description = data.get("description")    
+    if not title:
+        return jsonify({"msg": "Title is required"}), 400
+
+    last_module = Module.query.filter_by(course_id=course_id).order_by(Module.order_index.desc()).first()
+    if last_module:
+        new_order = last_module.order_index + 1
+    else:
+        new_order = 1    
+    module = Module(
+        title=title,
+        description=description,
+        course_id=course_id,
+        order_index=new_order
+    )
+    if course.published:
+        course.published = False
+    db.session.add(module)    
+    db.session.commit()       
+    return jsonify({"id": module.id,
+                    "title": module.title,
+                    "order_index": module.order_index
+                    }), 200
+
+
+@course_bp.route("/courses/<int:course_id>/modules", methods=["GET"])
+@jwt_required(optional=True)
+def get_modules(course_id):
+    course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+    modules = Module.query.filter_by(course_id=course_id).order_by(Module.order_index).all()
+    modules_data = []
+
+        user_id = get_jwt_identity()
+        if not course.published:
+            return jsonify({"msg": "Course not published"}), 403
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"msg": "User not found"}), 404
+        if user.role != "admin" and course.instructor_id != user.id:
+            return jsonify({"msg": "Course not published"}), 403
+
+    for module in modules:
+        modules_data.append({
+            "id": module.id,
+            "title": module.title,
+            "description": module.description,
+            "order_index": module.order_index
+        })
+    total_modules = len(modules)
+    return jsonify({
+        "modules": modules_data,
+        "total_modules": total_modules
+    }), 200
