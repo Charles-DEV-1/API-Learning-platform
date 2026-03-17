@@ -375,7 +375,7 @@ def get_modules(course_id):
     if not course:
         return jsonify({"msg": "Course not found"}), 404
     modules = Module.query.filter_by(course_id=course_id).order_by(Module.order_index).all()
-    modules_data = []
+    modules_list = []
 
         user_id = get_jwt_identity()
         if not course.published:
@@ -387,7 +387,7 @@ def get_modules(course_id):
             return jsonify({"msg": "Course not published"}), 403
 
     for module in modules:
-        modules_data.append({
+        modules_list.append({
             "id": module.id,
             "title": module.title,
             "description": module.description,
@@ -395,6 +395,6 @@ def get_modules(course_id):
         })
     total_modules = len(modules)
     return jsonify({
-        "modules": modules_data,
+        "modules": modules_list,
         "total_modules": total_modules
     }), 200
