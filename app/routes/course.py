@@ -1,10 +1,12 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
 from app.database import db
 from app.models.users import User
 from app import mail
 from app.models.course import Course
 from app.models.module import Module
+from app.models.lesson import Lesson
+from app.models.enrollment import Enrollment
 from flask_mail import Message
 
 course_bp = Blueprint("course", __name__)
@@ -369,32 +371,213 @@ def create_modules(course_id):
 
 
 @course_bp.route("/courses/<int:course_id>/modules", methods=["GET"])
-@jwt_required(optional=True)
 def get_modules(course_id):
     course = Course.query.get(course_id)
     if not course:
         return jsonify({"msg": "Course not found"}), 404
+
+    # Check if user is authenticated
+    verify_jwt_in_request(optional=True)
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id) if user_id else None
+    
+    # Determine if user has full access
+    has_full_access = False
+    if user:
+        if user.role == "admin" or course.instructor_id == user.id:
+            has_full_access = True
+        else:
+            # Check if user is enrolled in the course
+            enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course_id).first()
+            if enrollment:
+                has_full_access = True
+
     modules = Module.query.filter_by(course_id=course_id).order_by(Module.order_index).all()
     modules_list = []
 
-        user_id = get_jwt_identity()
-        if not course.published:
-            return jsonify({"msg": "Course not published"}), 403
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({"msg": "User not found"}), 404
-        if user.role != "admin" and course.instructor_id != user.id:
-            return jsonify({"msg": "Course not published"}), 403
-
     for module in modules:
-        modules_list.append({
-            "id": module.id,
-            "title": module.title,
-            "description": module.description,
-            "order_index": module.order_index
-        })
+        if has_full_access:
+            # Full access: return all details
+            modules_list.append({
+                "id": module.id,
+                "title": module.title,
+                "description": module.description,
+                "order_index": module.order_index
+            })
+        else:
+            # Limited access: only title
+            modules_list.append({
+                "id": module.id,
+                "title": module.title,
+                "order_index": module.order_index
+            })
+    
     total_modules = len(modules)
     return jsonify({
         "modules": modules_list,
         "total_modules": total_modules
     }), 200
+@course_bp.route("/modules/<int:module_id>/lessons", methods=["POST"])
+@jwt_required()
+def create_lesson(module_id):
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    module = Module.query.get(module_id)
+    if not module:
+        return jsonify({"message":"module not found!"}), 404
+    course = module.course
+    if not user:
+        return jsonify({"message":"user not found"})
+    if user.role != "instructor":
+        return jsonify({"message":"You can't access this page"}),403
+    if course.instructor_id != user.id:
+        return jsonify({"mesage":"You can only create lessons for your own courses/Modules"}), 403 
+    data = request.get_json() or {}
+    title = data.get("title")
+    content = data.get("content")           
+    duration = data.get("duration")
+    video_url = data.get("video_url")
+
+    if not title or not content or not duration:
+        return jsonify({"message":"All fields must be filled!"}),400
+    last_lesson = Lesson.query.filter_by(module_id=module_id).order_by(Lesson.order.desc()).first()
+    if last_lesson:
+        new_order = last_lesson.order + 1
+    else:
+        new_order = 1    
+
+    lesson = Lesson(
+        title=title,
+        content = content,
+        module_id = module_id,
+        order=new_order,
+        duration = duration,
+        video_url = video_url
+    )
+    if course.published:
+        course.published = False
+    db.session.add(lesson)    
+    db.session.commit()       
+    return jsonify({"id": lesson.id,
+                    "title": lesson.title,
+                    "order": lesson.order
+                    }), 201
+
+@course_bp.route("/modules/<int:module_id>/lessons", methods=["GET"])
+def get_lessons(module_id):
+    module = Module.query.get(module_id)
+    if not module:
+        return jsonify({"message":"module not found!"}), 404
+    course = module.course
+    
+    # Check if user is authenticated
+    verify_jwt_in_request(optional=True)
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id) if user_id else None
+    
+    # Determine if user has full access
+    has_full_access = False
+    if user:
+        if user.role == "admin" or course.instructor_id == user.id:
+            has_full_access = True
+        else:
+            # Check if user is enrolled in the course
+            enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course.id).first()
+            if enrollment:
+                has_full_access = True
+    
+    lessons = Lesson.query.filter_by(module_id=module_id).order_by(Lesson.order).all()
+    lessons_list = []
+    
+    for lesson in lessons:
+        if has_full_access:
+            # Full access: return all details
+            lessons_list.append({
+                "id": lesson.id,
+                "title": lesson.title,
+                "content": lesson.content,
+                "video_url": lesson.video_url,
+                "order": lesson.order,
+                "duration": lesson.duration,
+                "is_preview": lesson.is_preview
+            })
+        else:
+            # Limited access: only title and duration
+            lessons_list.append({
+                "id": lesson.id,
+                "title": lesson.title,
+                "duration": lesson.duration
+            })
+    
+    total_lessons = len(lessons)
+    return jsonify({
+        "lessons": lessons_list,
+        "total_lessons": total_lessons
+    }), 200
+
+# route for updating lesson
+@course_bp.route("/lessons/<int:lesson_id>", methods=["PATCH"]) 
+@jwt_required()  
+def update_lessons(lesson_id):
+    lesson = Lesson.query.get(lesson_id)
+    if not lesson:
+        return jsonify({"message":"lesson not found!"}), 404
+    module = lesson.module
+    if not module:
+        return jsonify({"message":"module not found!"}), 404
+    course = module.course
+
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id) if user_id else None
+    if not user:
+        return jsonify({"message":"User not Found!"}), 404
+    if user.id != course.instructor_id:
+        return jsonify({"message":"Access Denied!"}), 403
+
+    # Getting the information from the frontend.
+    data = request.get_json()
+
+    title = data.get("title")
+    content = data.get("content")
+    duration = data.get("duration")
+    video_url = data.get("video_url")
+
+    if title:
+        lesson.title = title
+    if content:
+        lesson.content = content
+    if duration:
+        lesson.duration = duration
+    if video_url:
+        lesson.video_url = video_url
+    else:
+        return jsonify({"message":"All fields must be filled!"}), 400
+    db.session.commit()
+    return jsonify({"message":"Lesson Updated Sucessfully!"}), 200
+
+@course_bp.route("/lessons/<int:lesson_id>", methods =["DELETE"])
+@jwt_required()
+def delete_lesson(lesson_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    if user.role not in ["instructor", "admin"]:
+        return jsonify({"msg": "Only instructors and admins can delete Lessons"}), 403    
+
+    lesson = Lesson.query.get(lesson_id)
+    if not lesson:
+        return jsonify({"msg": "Lesson not found"}), 404
+    module = lesson.module
+    if not module:
+        return jsonify({"message":"module not found!"}), 404
+    course = module.course
+
+    if user.role != "admin" and course.instructor_id != user.id:
+        return jsonify({"msg": "You can only delete your own lessons"}), 403
+
+    db.session.delete(lesson)
+    db.session.commit()
+    return jsonify({"message":"Lesson Deleted Successfully"}), 200
