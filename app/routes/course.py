@@ -38,30 +38,35 @@ def create_course():
             price=price,
             instructor_id=user.id
         )
+    try:
+        db.session.add(course)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error creating course", "error": str(e)}), 500            
 
-    db.session.add(course)
-    db.session.commit()        
+    try:
+        msg = Message(
+        subject="Your Course Creation ",
+        recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello,
 
-    msg = Message(
-    subject="Your Course Creation ",
-    recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
+        You just created a course on our platform.
 
-    You just created a course on our platform.
+        Thank you for your contribution to our learning community!
+        We are excited to have your course on our platform and look forward to seeing the impact it will have on learners.
+        You will receive an email notification once your course is live and available for students to enroll.
 
-    Thank you for your contribution to our learning community!
-    We are excited to have your course on our platform and look forward to seeing the impact it will have on learners.
-    You will receive an email notification once your course is live and available for students to enroll.
-
-    Best regards,
-    The Team
-    """
-    mail.send(msg)
-    
-    return jsonify({"msg": "Course created successfully and email notification sent"}), 201
-
+        Best regards,
+        The Team
+        """
+        mail.send(msg)
+        
+        return jsonify({"msg": "Course created successfully and email notification sent"}), 201
+    except Exception as e:
+        return jsonify({"msg": "Course created but failed to send email", "error": str(e)}), 201
 @course_bp.route("/courses", methods=["GET"])    
 def all_courses():
     courses = Course.query.filter_by(published=True).all()
@@ -126,7 +131,7 @@ def publish_course(course_id):
     data = request.get_json() or {}
     decision = str(data.get("decision", "")).strip().lower()
     if decision not in ["approved", "denied", "rejected"]:
-        return jsonify({"msg": "Decision must be 'approved' or 'denied'"}), 400
+        return jsonify({"msg": "Decision must be 'approved' or 'denied' or 'rejected'"}), 400
 
     instructor = course.instructor
     if not instructor:
@@ -134,44 +139,56 @@ def publish_course(course_id):
 
     if decision == "approved":
         course.published = True
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"msg": "Error publishing course", "error": str(e)}), 500
 
+        try:
+            msg = Message(
+                subject="Your Course Has Been Published",
+                recipients=[instructor.email]
+            )
+            msg.body = f"""
+            Hello {instructor.username},
+
+            Your course "{course.title}" has been reviewed and published on our platform.
+
+            Thank you for your contribution to our learning community.
+
+            Best regards,
+            The Team
+            """
+            mail.send(msg)
+            return jsonify({"msg": "Course approved and published. Email sent to instructor"}), 200
+        except Exception as e:
+            return jsonify({"msg": "Course approved and published but failed to send email", "error": str(e)}), 200
+    course.published = False
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error denying course", "error": str(e)}), 500
+    try:
         msg = Message(
-            subject="Your Course Has Been Published",
+            subject="Course Review Update",
             recipients=[instructor.email]
         )
         msg.body = f"""
         Hello {instructor.username},
 
-        Your course "{course.title}" has been reviewed and published on our platform.
+        Your course "{course.title}" was reviewed and was not approved for publishing at this time.
 
-        Thank you for your contribution to our learning community.
+        Please review your content and submit updates if needed.
 
         Best regards,
         The Team
         """
         mail.send(msg)
-        return jsonify({"msg": "Course approved and published. Email sent to instructor"}), 200
-
-    course.published = False
-    db.session.commit()
-
-    msg = Message(
-        subject="Course Review Update",
-        recipients=[instructor.email]
-    )
-    msg.body = f"""
-    Hello {instructor.username},
-
-    Your course "{course.title}" was reviewed and was not approved for publishing at this time.
-
-    Please review your content and submit updates if needed.
-
-    Best regards,
-    The Team
-    """
-    mail.send(msg)
-    return jsonify({"msg": "Course review completed. Course was not published and email sent"}), 200
+        return jsonify({"msg": "Course review completed. Course was not published and email sent"}), 200
+    except Exception as e:
+        return jsonify({"msg": "Course review completed. Course was not published but failed to send email", "error": str(e)}), 200
 
 @course_bp.route("/courses/<int:course_id>", methods=["PATCH"])
 @jwt_required()
@@ -193,26 +210,32 @@ def unpublish_course(course_id):
         return jsonify({"msg": "You can only unpublish your own courses"}), 403
 
     course.published = False
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error unpublishing course", "error": str(e)}), 500
 
-    msg = Message(
-    subject="Your Course Unpublished ",
-    recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
+    try:
+        msg = Message(
+        subject="Your Course Unpublished ",
+        recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello,
 
-    Your course "{course.title}" has been unpublished on our platform.
+        Your course "{course.title}" has been unpublished on our platform.
 
-    If you have any questions or need assistance, please feel free to contact our support team.
+        If you have any questions or need assistance, please feel free to contact our support team.
 
-    Best regards,
-    The Team
-    """
-    mail.send(msg)    
-    
-    return jsonify({"msg": "Course unpublished successfully and email notification sent"}), 200
-
+        Best regards,
+        The Team
+        """
+        mail.send(msg)    
+        
+        return jsonify({"msg": "Course unpublished successfully and email notification sent"}), 200
+    except Exception as e:
+        return jsonify({"msg": "Course unpublished but failed to send email", "error": str(e)}), 200
 @course_bp.route("/courses/me", methods=["GET"])    
 @jwt_required()
 def my_courses():
@@ -238,7 +261,7 @@ def my_courses():
             "instructor_id": course.instructor_id,
             "published": course.published
         })
-    return jsonify(courses_data), 200
+    return jsonify(courses_data), 201
 
 @course_bp.route("/courses/<int:course_id>/update", methods=["PATCH"])
 @jwt_required()
@@ -270,26 +293,31 @@ def update_course(course_id):
         course.description = description
     if price is not None:
         course.price = price
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error updating course", "error": str(e)}), 500
+    try:
+        msg = Message(
+        subject="Your Course Updated ",
+        recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello,
 
-    db.session.commit()
+        Your course "{course.title}" has been updated on our platform.
 
-    msg = Message(
-    subject="Your Course Updated ",
-    recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
-
-    Your course "{course.title}" has been updated on our platform.
-
-    Thank you for your contribution to our learning community!
-    
-    Best regards,
-    The Team
-    """
-    mail.send(msg)    
-    
-    return jsonify({"msg": "Course updated successfully and email notification sent"}), 200
+        Thank you for your contribution to our learning community!
+        
+        Best regards,
+        The Team
+        """
+        mail.send(msg)    
+        
+        return jsonify({"msg": "Course updated successfully and email notification sent"}), 200
+    except Exception as e:
+        return jsonify({"msg": "Course updated but failed to send email", "error": str(e)}), 200
 
 @course_bp.route("/courses/<int:course_id>", methods=["DELETE"])
 @jwt_required()
@@ -309,25 +337,33 @@ def delete_course(course_id):
 
     if user.role != "admin" and course.instructor_id != user.id:
         return jsonify({"msg": "You can only delete your own courses"}), 403
+    try:
+        db.session.delete(course)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error deleting course", "error": str(e)}), 500
 
-    db.session.delete(course)
-    db.session.commit()
-
-    msg = Message(
-        subject="Your Course Deleted",
+    try:
+         msg = Message(
+        subject="Your Course Deleted ",
         recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
+        )
+        msg.body = f"""
+        Hello,
 
-    Your course "{course.title}" has been deleted from our platform.
+        Your course "{course.title}" has been deleted from our platform.
 
-    If you have any questions or need assistance, please feel free to contact our support team.
+        If you have any questions or need assistance, please feel free to contact our support team.
 
-    Best regards,
-    The Team
-    """
-    mail.send(msg)    
+        Best regards,
+        The Team
+        """
+        mail.send(msg)    
+        
+        return jsonify({"msg": "Course deleted successfully and email notification sent"}), 200
+    except Exception as e:
+        return jsonify({"msg": "Course deleted but failed to send email", "error": str(e)}), 200
     
 @course_bp.route("/courses/<int:course_id>/modules", methods=["POST"])
 @jwt_required()
@@ -362,8 +398,12 @@ def create_modules(course_id):
     )
     if course.published:
         course.published = False
-    db.session.add(module)    
-    db.session.commit()       
+    try:
+        db.session.add(module)    
+        db.session.commit()     
+    except Exception as e:  
+        db.session.rollback()
+        return jsonify({"msg": "Error creating module", "error": str(e)}), 500  
     return jsonify({"id": module.id,
                     "title": module.title,
                     "order_index": module.order_index
@@ -456,8 +496,12 @@ def create_lesson(module_id):
     )
     if course.published:
         course.published = False
-    db.session.add(lesson)    
-    db.session.commit()       
+    try:
+        db.session.add(lesson)    
+        db.session.commit()      
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message":"Error creating lesson", "error": str(e)}), 500    
     return jsonify({"id": lesson.id,
                     "title": lesson.title,
                     "order": lesson.order
@@ -552,7 +596,11 @@ def update_lessons(lesson_id):
         lesson.video_url = video_url
     else:
         return jsonify({"message":"All fields must be filled!"}), 400
-    db.session.commit()
+    try:   
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message":"Error updating lesson", "error": str(e)}), 500
     return jsonify({"message":"Lesson Updated Sucessfully!"}), 200
 
 @course_bp.route("/lessons/<int:lesson_id>", methods =["DELETE"])
@@ -577,7 +625,11 @@ def delete_lesson(lesson_id):
 
     if user.role != "admin" and course.instructor_id != user.id:
         return jsonify({"msg": "You can only delete your own lessons"}), 403
-
-    db.session.delete(lesson)
-    db.session.commit()
+    
+    try:
+        db.session.delete(lesson)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message":"Error deleting lesson", "error": str(e)}), 500
     return jsonify({"message":"Lesson Deleted Successfully"}), 200

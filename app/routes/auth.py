@@ -29,7 +29,13 @@ def home():
     return jsonify({'Message':'The connection was successful'})
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'Invalid JSON payload'}), 400
+    except Exception as e:
+        return jsonify({'message': 'Failed to parse JSON', 'error': str(e)}), 400
+
     username = data.get('username')
     password = data.get('password')
     email = data.get('email')  # Make sure to get email too since it's required
@@ -52,13 +58,23 @@ def register():
         email=email
     )
 
-    db.session.add(new_user)
-    db.session.commit()
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Error registering user', 'error': str(e)}), 500
 
     return jsonify({'message': 'User registered successfully'}), 201
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'Invalid JSON payload'}), 400
+    except Exception as e:
+        return jsonify({'message': 'Failed to parse JSON', 'error': str(e)}), 400
+
     username = data.get('username')
     password = data.get('password')
 
@@ -67,19 +83,26 @@ def login():
 
     user = User.query.filter_by(username=username).first()
     if user and check_password_hash(user.password_hash, password):
-        # Update last login time
-        user.last_login = db.func.now()
-        user.token_version = 0  # Ensure token version is included in JWT claims
-        db.session.commit()
-        access_token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
-        refresh_token = create_refresh_token(identity=str(user.id), additional_claims={"token_version": user.token_version, "role": user.role})
+        try:
+            # Update last login time
+            user.last_login = db.func.now()
+            user.token_version = 0  # Ensure token version is included in JWT claims
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'message': 'Error updating login info', 'error': str(e)}), 500
+
+        try:
+            access_token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
+            refresh_token = create_refresh_token(identity=str(user.id), additional_claims={"token_version": user.token_version, "role": user.role})
+        except Exception as e:
+            return jsonify({'message': 'Error generating tokens', 'error': str(e)}), 500
+
         response = make_response(jsonify({'message': 'Login successful'}), 200)
-        
         response.set_cookie('access_token', access_token, httponly=True, secure=False, samesite='Lax', max_age=900)
         response.set_cookie('refresh_token', refresh_token, httponly=True, secure=False, samesite='Lax', max_age=604800)
     else:
         response = make_response(jsonify({'message': 'Invalid username or password'}), 401)
-
 
     return response
 
@@ -104,13 +127,23 @@ def get_current_user():
 def refresh():
     user_id = int(get_jwt_identity())
 
-    access_token = create_access_token(identity=str(user_id))
+    try:
+        access_token = create_access_token(identity=str(user_id))
+    except Exception as e:
+        return jsonify({'message': 'Error generating access token', 'error': str(e)}), 500
+
     response = make_response(jsonify({'message': 'Token refreshed'}), 200)
     response.set_cookie('access_token', access_token, httponly=True, secure=False, samesite='Lax', max_age=900)
+    
     user = User.query.get(user_id)
     if user:
-        user.token_version = 0  # Ensure token version is included in JWT claims
-        db.session.commit()
+        try:
+            user.token_version = 0  # Ensure token version is included in JWT claims
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'message': 'Token refreshed but failed to update user info', 'error': str(e)}), 200
+    
     return response
 
 
@@ -135,8 +168,13 @@ def logout_all():
     # Increment token version for the user
     user = User.query.get(current_user_id)
     if user:
-        user.token_version += 1
-        db.session.commit()
+        try:
+            user.token_version += 1
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'message': 'Error logging out', 'error': str(e)}), 500
+    
     response = make_response(jsonify({'message': 'Logged out of all sessions'}), 200)
     response.delete_cookie('access_token')
     response.delete_cookie('refresh_token')
@@ -147,7 +185,13 @@ def hash_otp(otp):
 
 @auth_bp.route("/forgot-password", methods=['POST'])
 def forgot_password():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'Invalid JSON payload'}), 400
+    except Exception as e:
+        return jsonify({'message': 'Failed to parse JSON', 'error': str(e)}), 400
+
     email = data.get('email')
 
     if not email:
@@ -168,24 +212,34 @@ def forgot_password():
     user.otp_expires_at = datetime.utcnow() + timedelta(minutes=10)
     user.otp_used = False
     user.otp_verified = False
-    db.session.commit()
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Error saving OTP', 'error': str(e)}), 500
+
     # Send OTP to user's email
-    msg = Message(
-    subject="Your Password Reset OTP",
-    recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
+    try:
+        msg = Message(
+        subject="Your Password Reset OTP",
+        recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello,
 
-    You requested to reset your password.
+        You requested to reset your password.
 
-    Your OTP is: {otp}
+        Your OTP is: {otp}
 
-    This code will expire in 10 minutes.
+        This code will expire in 10 minutes.
 
-    If you did not request this, ignore this email.
-    """
-    mail.send(msg)
+        If you did not request this, ignore this email.
+        """
+        mail.send(msg)
+    except Exception as e:
+        return jsonify({'message': 'OTP saved but failed to send email', 'error': str(e)}), 200
+
     return jsonify({
         'message': 'OTP sent to your email',
         'otp': otp  # For testing purposes, include the OTP in the response (remove in production)
@@ -193,7 +247,13 @@ def forgot_password():
 
 @auth_bp.route("/check-otp", methods=['POST'])
 def check_otp():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'Invalid JSON payload'}), 400
+    except Exception as e:
+        return jsonify({'message': 'Failed to parse JSON', 'error': str(e)}), 400
+
     email = data.get('email')
     otp = data.get('otp')
 
@@ -218,21 +278,35 @@ def check_otp():
 
     compared_otp = hmac.compare_digest(hash_otp(otp), user.otp_hash)    
     if not compared_otp:
-        user.otp_attempts += 1
-        db.session.commit()
+        try:
+            user.otp_attempts += 1
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
         return jsonify({'message': 'Invalid OTP'}), 400
 
     # Mark OTP as verified and used
     user.otp_verified = True
     user.otp_used = True
     user.otp_attempts = 0  # Reset attempts on successful verification
-    db.session.commit()
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Error verifying OTP', 'error': str(e)}), 500
 
     return jsonify({'message': 'OTP is valid'}), 200
 
 @auth_bp.route("/reset-password", methods=['POST'])
 def reset_password():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'Invalid JSON payload'}), 400
+    except Exception as e:
+        return jsonify({'message': 'Failed to parse JSON', 'error': str(e)}), 400
+
     email = data.get('email')
     user = User.query.filter_by(email=email).first()
     if not user:
@@ -242,6 +316,7 @@ def reset_password():
     new_password = data.get('new_password')            
     if not new_password:
         return jsonify({'message': 'New password is required'}), 400
+    
     user.password_hash = generate_password_hash(new_password)
     user.otp_verified = False  # Reset OTP verification status
     user.token_version += 1  # Invalidate existing tokens
@@ -250,7 +325,12 @@ def reset_password():
     user.otp_used = False  # Reset OTP used 
     user.otp_attempts = 0  # Reset OTP attempts
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Error resetting password', 'error': str(e)}), 500
+
     return jsonify({'message': 'Password reset successfully'}), 200
 
 

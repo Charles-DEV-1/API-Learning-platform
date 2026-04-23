@@ -20,7 +20,13 @@ def apply_instructor():
     if user.role != "student":
         return jsonify({"msg": "Only students can apply to be instructors"}), 403    
 
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"msg": "Invalid JSON payload"}), 400
+    except Exception as e:
+        return jsonify({"msg": "Failed to parse JSON", "error": str(e)}), 400
+
     bio = data.get("bio")
     experience = data.get("experience")
 
@@ -37,27 +43,35 @@ def apply_instructor():
         experience=experience
     )
 
-    db.session.add(application)
-    db.session.commit()
+    try:
+        db.session.add(application)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error submitting application", "error": str(e)}), 500
 
-    msg = Message(
-    subject="Your Password Reset OTP",
-    recipients=[user.email]
-    )
-    msg.body = f"""
-    Hello,
+    try:
+        msg = Message(
+        subject="Your Password Reset OTP",
+        recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello,
 
-    You just applied to be an instructor on our platform.
+        You just applied to be an instructor on our platform.
 
-    We are excited to review your application and will get back to you as soon as possible.
-    You will receive an email notification once your application has been reviewed.
-    Any updates regarding your application status will be communicated via email.
-    Thank you for your interest in becoming an instructor!
+        We are excited to review your application and will get back to you as soon as possible.
+        You will receive an email notification once your application has been reviewed.
+        Any updates regarding your application status will be communicated via email.
+        Thank you for your interest in becoming an instructor!
 
-    Best regards,
-    The Team
-    """
-    mail.send(msg)
+        Best regards,
+        The Team
+        """
+        mail.send(msg)
+    except Exception as e:
+        return jsonify({"msg": "Application submitted but failed to send email", "error": str(e)}), 201
+
     return jsonify({"msg": "Instructor application submitted successfully"}), 201
 
 
@@ -103,7 +117,13 @@ def review_application(application_id):
     if not application:
         return jsonify({"msg": "Application not found"}), 404
 
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"msg": "Invalid JSON payload"}), 400
+    except Exception as e:
+        return jsonify({"msg": "Failed to parse JSON", "error": str(e)}), 400
+
     decision = data.get("decision")
 
     if decision not in ["approved", "rejected"]:
@@ -111,56 +131,81 @@ def review_application(application_id):
 
     application.status = decision
     application.reviewed_by = user_id
-    db.session.commit()
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error updating application status", "error": str(e)}), 500
+
+    # Get applicant info
+    applicant = User.query.get(application.user_id)
+    if not applicant:
+        return jsonify({"msg": "Applicant not found"}), 404
 
     if decision == "approved":
-        applicant = User.query.get(application.user_id)
         applicant.role = "instructor"
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"msg": "Status updated but failed to update applicant role", "error": str(e)}), 500
 
-        msg = Message(
-        subject="Instructor Application Approved",
-        recipients=[applicant.email]
-        )
-        msg.body = f"""
-        Hello,
+        try:
+            msg = Message(
+            subject="Instructor Application Approved",
+            recipients=[applicant.email]
+            )
+            msg.body = f"""
+            Hello,
 
-        Congratulations! 
-        Your application to become an instructor on our platform has been approved.
-        You can now log in and start creating courses to share your knowledge with students around the world.
-        We are excited to have you as part of our instructor community and look forward to seeing the
-        amazing courses you will create!
+            Congratulations! 
+            Your application to become an instructor on our platform has been approved.
+            You can now log in and start creating courses to share your knowledge with students around the world.
+            We are excited to have you as part of our instructor community and look forward to seeing the
+            amazing courses you will create!
 
-        Thank you for your interest in becoming an instructor!
+            Thank you for your interest in becoming an instructor!
 
-        Best regards,
-        The Team
-        """
-        mail.send(msg)
-        return jsonify({
-            'message': 'Application approved and email sent to applicant'
-        }), 200
+            Best regards,
+            The Team
+            """
+            mail.send(msg)
+            return jsonify({
+                'message': 'Application approved and email sent to applicant'
+            }), 200
+        except Exception as e:
+            return jsonify({
+                'message': 'Application approved but failed to send email',
+                'error': str(e)
+            }), 200
     else:
-        msg = Message(
-        subject="Instructor Application Rejected",
-        recipients=[applicant.email]
-        )
-        msg.body = f"""
-        Hello,
+        try:
+            msg = Message(
+            subject="Instructor Application Rejected",
+            recipients=[applicant.email]
+            )
+            msg.body = f"""
+            Hello,
 
-        Thanks for applying for the role of an instructor on our platform,
-        But unfortunately, your application has been rejected after careful review.
-        We encourage you to continue learning and improving your skills, and you are welcome to reapply
-        in the future if you meet the requirements.
-        If you have any questions about the decision, please feel free to contact our support team.
+            Thanks for applying for the role of an instructor on our platform,
+            But unfortunately, your application has been rejected after careful review.
+            We encourage you to continue learning and improving your skills, and you are welcome to reapply
+            in the future if you meet the requirements.
+            If you have any questions about the decision, please feel free to contact our support team.
 
-        Thank you for your interest in becoming an instructor!
+            Thank you for your interest in becoming an instructor!
 
-        Best regards,
-        The Team
-        """
-        mail.send(msg)
-        return jsonify({
-            'message': 'Application rejected and email sent to applicant'
-        }), 200    
+            Best regards,
+            The Team
+            """
+            mail.send(msg)
+            return jsonify({
+                'message': 'Application rejected and email sent to applicant'
+            }), 200
+        except Exception as e:
+            return jsonify({
+                'message': 'Application rejected but failed to send email',
+                'error': str(e)
+            }), 200    
 
