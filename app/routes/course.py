@@ -7,6 +7,7 @@ from app.models.course import Course
 from app.models.module import Module
 from app.models.lesson import Lesson
 from app.models.enrollment import Enrollment
+from app.models.lesson_progress import LessonProgress
 from flask_mail import Message
 
 course_bp = Blueprint("course", __name__)
@@ -345,7 +346,7 @@ def delete_course(course_id):
         return jsonify({"msg": "Error deleting course", "error": str(e)}), 500
 
     try:
-         msg = Message(
+        msg = Message(
         subject="Your Course Deleted ",
         recipients=[user.email]
         )
@@ -610,14 +611,14 @@ def delete_lesson(lesson_id):
     user = User.query.get(user_id)
 
     if not user:
-        return jsonify({"msg": "User not found"}), 404
+        return jsonify({"message": "User not found"}), 404
 
     if user.role not in ["instructor", "admin"]:
         return jsonify({"msg": "Only instructors and admins can delete Lessons"}), 403    
 
     lesson = Lesson.query.get(lesson_id)
     if not lesson:
-        return jsonify({"msg": "Lesson not found"}), 404
+        return jsonify({"message": "Lesson not found"}), 404
     module = lesson.module
     if not module:
         return jsonify({"message":"module not found!"}), 404
@@ -633,3 +634,242 @@ def delete_lesson(lesson_id):
         db.session.rollback()
         return jsonify({"message":"Error deleting lesson", "error": str(e)}), 500
     return jsonify({"message":"Lesson Deleted Successfully"}), 200
+
+@course_bp.route("/courses/<int:course_id>/enroll", methods=["POST"])
+@jwt_required()
+def enroll_course(course_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+
+    if not course:
+        return jsonify({"message": "Course not found"}), 404
+    if course.published == False:
+        return jsonify({"message": "Course is not published yet"}), 400
+    if course.instructor_id == user.id:
+        return jsonify({"message": "Instructors cannot enroll in their own courses"}), 403
+
+    existing_enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course_id).first()
+    if existing_enrollment:
+        return jsonify({"messaege": "You are already enrolled in this course"}), 400
+
+    enrollment = Enrollment(user_id=user.id, course_id=course_id)
+    try:
+        db.session.add(enrollment)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "Error enrolling in course", "error": str(e)}), 500
+
+    try:
+        msg = Message(
+            subject="Course Enrollment Confirmation",
+            recipients=[user.email]
+        )
+        msg.body = f"""
+        Hello {user.username},
+
+        You have successfully enrolled in the course "{course.title}".
+
+        We hope you enjoy the learning experience and find the course valuable.
+
+        Best regards,
+        The Team
+        """
+        mail.send(msg)
+        
+        return jsonify({"msg": "Enrolled successfully and email notification sent"}), 201
+    except Exception as e:
+        return jsonify({"msg": "Enrolled successfully but failed to send email", "error": str(e)}), 200
+
+@course_bp.route("/courses/<int:course_id>/enrollment-status", methods=["GET"])
+@jwt_required()
+def enrollment_status(course_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+
+    if not course:
+        return jsonify({"message": "Course not found"}), 404
+
+    enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course_id).first()
+    is_enrolled = enrollment is not None
+
+    return jsonify({"is_enrolled": is_enrolled}), 200
+@course_bp.route("/me/enrollments", methods=["GET"])
+@jwt_required()
+def my_enrollments():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+
+    enrollments = Enrollment.query.filter_by(user_id=user.id).all()
+    enrolled_courses = []
+    for enrollment in enrollments:
+        course = enrollment.course
+        if course and course.published:
+            enrolled_courses.append({
+                "course_id": course.id,
+                "title": course.title,
+                "description": course.description,
+                "price": course.price,
+                "enrolled_at": enrollment.enrolled_at.isoformat(),
+                "instructor_name": course.instructor.username if course.instructor else "Unknown",
+                "published": course.published
+            })
+
+    return jsonify(enrolled_courses), 200
+
+@course_bp.route("/lessons/<int:lesson_id>/complete", methods=["POST"])
+@jwt_required()
+def complete_lesson(lesson_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    lesson = Lesson.query.get(lesson_id)
+    if not lesson:
+        return jsonify({"msg": "Lesson not found"}), 404
+
+    # Navigate: lesson → module → course
+    module = lesson.module
+    if not module:
+        return jsonify({"msg": "Module not found"}), 404
+
+    course = module.course
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    # Check access: user is enrolled OR admin OR instructor
+    has_access = False
+    if user.role == "admin" or course.instructor_id == user.id:
+        has_access = True
+    else:
+        # Check if user is enrolled
+        enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course.id).first()
+        if enrollment:
+            has_access = True
+
+    if not has_access:
+        return jsonify({"msg": "You don't have access to this lesson"}), 403
+
+    # Check if already completed
+    existing_progress = LessonProgress.query.filter_by(user_id=user.id, lesson_id=lesson_id).first()
+    if existing_progress:
+        return jsonify({"msg": "You have already completed this lesson"}), 400
+
+    # Save completion
+    progress = LessonProgress(user_id=user.id, lesson_id=lesson_id)
+    try:
+        db.session.add(progress)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error completing lesson", "error": str(e)}), 500
+
+    return jsonify({"msg": "Lesson completed successfully"}), 200
+    
+@course_bp.route("/courses/<int:course_id>/progress", methods=["GET"])
+@jwt_required()
+#Logic:
+#Get total lessons in course
+#Get completed lessons by this user
+#Calculate:
+#progress = (completed / total) * 100
+def course_progress(course_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    # Check access: user is enrolled OR admin OR instructor
+    has_access = False
+    if user.role == "admin" or course.instructor_id == user.id:
+        has_access = True
+    else:
+        # Check if user is enrolled
+        enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course.id).first()
+        if enrollment:
+            has_access = True
+
+    if not has_access:
+        return jsonify({"msg": "You don't have access to this course's progress"}), 403
+
+    # Get total lessons in the course
+    total_lessons = Lesson.query.join(Module).filter(Module.course_id == course_id).count()
+
+    # Get completed lessons by this user for this course
+    completed_lessons = LessonProgress.query.join(Lesson).join(Module).filter(
+        LessonProgress.user_id == user.id,
+        Module.course_id == course_id
+    ).count()
+
+    if total_lessons == 0:
+        progress = 0
+    else:
+        progress = (completed / total) * 100
+
+    return jsonify({
+        "course_id": course_id,
+        "total_lessons": total_lessons,
+        "completed_lessons": completed_lessons,
+        "progress_percentage": round(progress_percentage, 2)
+    }), 200
+@course_bp.route("/lessons/<int:lesson_id>/status", methods=["GET"])
+@jwt_required()
+def lesson_status(lesson_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    lesson = Lesson.query.get(lesson_id)
+    if not lesson:
+        return jsonify({"msg": "Lesson not found"}), 404
+
+    # Navigate: lesson → module → course
+    module = lesson.module
+    if not module:
+        return jsonify({"msg": "Module not found"}), 404
+
+    course = module.course
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    # Check access: user is enrolled OR admin OR instructor
+    has_access = False
+    if user.role == "admin" or course.instructor_id == user.id:
+        has_access = True
+    else:
+        # Check if user is enrolled
+        enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course.id).first()
+        if enrollment:
+            has_access = True
+
+    if not has_access:
+        return jsonify({"msg": "You don't have access to this lesson's status"}), 403
+
+    # Check if completed
+    progress = LessonProgress.query.filter_by(user_id=user.id, lesson_id=lesson_id).first()
+    is_completed = progress is not None
+
+    return jsonify({
+        "lesson_id": lesson_id,
+        "is_completed": is_completed
+    }), 201

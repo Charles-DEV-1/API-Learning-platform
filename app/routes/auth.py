@@ -6,7 +6,7 @@ import hashlib
 from app.utils.decorators import role_required
 import hmac
 import os
-from app import redis_client, mail, bcrypt
+from app import redis_client, mail
 from flask_mail import Message
 import time
 from datetime import timedelta, datetime
