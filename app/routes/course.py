@@ -8,7 +8,9 @@ from app.models.module import Module
 from app.models.lesson import Lesson
 from app.models.enrollment import Enrollment
 from app.models.lesson_progress import LessonProgress
+from app.models.review import Review
 from flask_mail import Message
+from sqlalchemy import func
 
 course_bp = Blueprint("course", __name__)
 
@@ -822,13 +824,13 @@ def course_progress(course_id):
     if total_lessons == 0:
         progress = 0
     else:
-        progress = (completed / total) * 100
+        progress = (completed_lessons / total_lessons) * 100
 
     return jsonify({
         "course_id": course_id,
         "total_lessons": total_lessons,
         "completed_lessons": completed_lessons,
-        "progress_percentage": round(progress_percentage, 2)
+        "progress_percentage": round(progress, 2)
     }), 200
 @course_bp.route("/lessons/<int:lesson_id>/status", methods=["GET"])
 @jwt_required()
@@ -873,3 +875,137 @@ def lesson_status(lesson_id):
         "lesson_id": lesson_id,
         "is_completed": is_completed
     }), 201
+    
+@course_bp.route("/courses/<int:course_id>/reviews", methods=["POST"])
+@jwt_required()
+def submit_review(course_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    # Check if user is enrolled in the course
+    enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course_id).first()
+    if not enrollment:
+        return jsonify({"msg": "You can only review courses you are enrolled in"}), 403
+    
+    review_exists = Review.query.filter_by(user_id=user.id, course_id=course_id).first()
+    if review_exists:
+        return jsonify({"msg": "You have already submitted a review for this course"}), 400
+
+    data = request.get_json()
+    rating = data.get("rating")
+    comment = data.get("comment")
+
+    if type(rating) != int:
+        return jsonify({"msg": "Rating must be an integer between 1 and 5"}), 400
+    if rating is None or rating < 1 or rating > 5:
+        return jsonify({"msg": "Rating must be an integer between 1 and 5"}), 400
+
+    review = Review(
+        user_id=user.id,
+        course_id=course_id,
+        rating=rating,
+        comment=comment
+    )
+    try:
+        db.session.add(review)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error submitting review", "error": str(e)}), 500
+
+    return jsonify({"msg": "Review submitted successfully"}), 201    
+
+@course_bp.route("/courses/<int:course_id>/reviews", methods=["GET"])
+def get_reviews(course_id):
+    course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    reviews = Review.query.filter_by(course_id=course_id).all()
+    reviews_list = []
+    for review in reviews:
+        reviewer = review.user
+        reviews_list.append({
+            "id": review.id,
+            "rating": review.rating,
+            "comment": review.comment,
+            "reviewer_name": reviewer.username if reviewer else "Unknown"
+        })
+
+    return jsonify(reviews_list), 200
+
+@course_bp.route("/courses/<int:course_id>/ratings", methods=["GET"])
+def get_average_rating(course_id):
+    course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    reviews = Review.query.filter_by(course_id=course_id).all()
+    if not reviews:
+        return jsonify({"average_rating": None, "total_reviews": 0}), 200
+
+    
+    average_rating = db.session.query(func.avg(Review.rating)).filter_by(course_id=course_id).scalar()
+    total_reviews = db.session.query(func.count(Review.id)).filter_by(course_id=course_id).scalar()
+
+    return jsonify({
+        "average_rating": round(average_rating, 2),
+        "total_reviews": total_reviews
+    }), 200
+
+@course_bp.route("/courses/<int:course_id>/reviews", methods=["PATCH"])
+@jwt_required()
+def update_review(course_id):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    if not course:
+        return jsonify({"msg": "Course not found"}), 404
+
+    # Check if user is enrolled in the course
+    enrollment = Enrollment.query.filter_by(user_id=user.id, course_id=course_id).first()
+    if not enrollment:
+        return jsonify({"msg": "You can only update reviews for courses you are enrolled in"}), 403
+    
+    review = Review.query.filter_by(user_id=user.id, course_id=course_id).first()
+    if not review:
+        return jsonify({"msg": "Review not found. You can only update an existing review."}), 404
+
+    data = request.get_json()
+    rating = data.get("rating")
+    comment = data.get("comment")
+
+    if rating is not None:
+        # Validate rating type and range
+        if not isinstance(rating, int) or isinstance(rating, bool):
+            return jsonify({"msg": "Rating must be an integer"}), 400
+        if rating < 1 or rating > 5:
+            return jsonify({"msg": "Rating must be an integer between 1 and 5"}), 400
+        review.rating = rating
+    if comment is not None:
+        # Validate and sanitize comment
+        if not isinstance(comment, str):
+            return jsonify({"msg": "Comment must be a string"}), 400
+        comment = comment.strip()
+        if len(comment) > 500:
+            return jsonify({"msg": "Comment must be 500 characters or less"}), 400
+        review.comment = comment
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error updating review", "error": str(e)}), 500
+
+    return jsonify({"msg": "Review updated successfully"}), 200
